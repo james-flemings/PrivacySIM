@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest + py_compile (no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "requirements*.txt"
+
+      - name: Set up Python 3.10
+        run: uv venv --python 3.10 --seed
+
+      - name: Install non-GPU project dependencies
+        # Install only the deps needed for evaluation / pipeline / processing
+        # tests. We skip vllm + torch (CUDA) — the test suite is structured to
+        # avoid importing them and runs entirely on CPU.
+        run: |
+          source .venv/bin/activate
+          uv pip install pandas matplotlib google-genai openpyxl pyyaml \
+                         openai anthropic numpy pytest
+
+      - name: Compile-check every src/ and scripts/ Python file
+        run: |
+          source .venv/bin/activate
+          # Skip the four sim backends — they import vllm/openai/etc. and we
+          # don't want to install vllm here. Their CLIs are exercised at the
+          # command-builder level by tests/test_pipeline.py.
+          python -m py_compile $(ls src/*.py | grep -vE 'user_simulation\.py$') \
+                               scripts/*.py
+
+      - name: Run pytest
+        run: |
+          source .venv/bin/activate
+          pytest tests/ -v --tb=short

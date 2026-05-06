@@ -1,0 +1,14 @@
+# Project deps that aren't pulled in by `uv pip install vllm --torch-backend=auto`.
+# vllm already brings in numpy, openai, anthropic, huggingface_hub, requests,
+# tqdm, pyyaml; the four below are what the rest of the codebase needs, plus
+# pytest for the test suite (only required for development / CI, not for runs).
+#
+# transformers is pinned because vllm 0.19.0 ships with transformers 4.57.6,
+# which predates the gemma-4 model architecture (and a few other recent open
+# weights). 5.6.2 is the version we developed/tested against.
+pandas
+matplotlib
+google-genai
+openpyxl
+pytest
+transformers==5.6.2

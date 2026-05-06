@@ -1,0 +1,129 @@
+# Model configs for the sim -> eval -> plots pipeline. Driven by src/pipeline.py.
+#
+# Each model declares a `backend` (default: vllm). The `defaults` block is
+# split by backend: every model inherits from `defaults.<backend>`, then its
+# per-model block overrides on a per-key basis. Paths (input CSV, sim output
+# CSV, eval summary CSV, plots dir) are derived from the model name by
+# src/pipeline.py and are NOT set here.
+#
+# Key naming: snake_case keys become --snake-case flags passed to the sim
+# script for that backend (src/user_simulation.py for vllm,
+# src/openai_user_simulation.py for openai,
+# src/claude_user_simulation.py for claude,
+# src/gemini_user_simulation.py for gemini). Boolean flags
+# (trust_remote_code, enforce_eager, enable_expert_parallel) are emitted as
+# bare flags when true, omitted when false or absent. `cuda_visible_devices`
+# is special-cased and set in the child process env rather than passed as a
+# flag. `backend` is consumed by the orchestrator and never forwarded.
+
+defaults:
+  vllm:
+    prompt_column: llm_prompt
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 20
+    presence_penalty: 0.0
+    frequency_penalty: 0.0
+    seed: 42
+    max_model_len: 32768 
+    max_tokens: 32768 
+    start_row: 0
+    cuda_visible_devices: "0,1,2,3,4,5,6,7"
+    tensor_parallel_size: 8 
+    max_num_seqs: 256
+    batch_size: 256
+    gpu_memory_utilization: 0.88
+    enable_thinking: true
+    reasoning_effort: medium
+
+  openai:
+    prompt_column: llm_prompt
+    reasoning_effort: low
+    reasoning_summary: detailed
+    max_output_tokens: 8192
+    completion_window: 24h
+    poll_interval_seconds: 30
+
+  claude:
+    prompt_column: llm_prompt
+    max_tokens: 8192
+    batch_size: 1000
+    poll_interval_seconds: 30
+
+  gemini:
+    prompt_column: llm_prompt
+    max_output_tokens: 8192
+    batch_size: 1000
+    poll_interval_seconds: 30
+
+models:
+  gemma4_32B:
+    model: google/gemma-4-31B-it
+    reasoning_parser: gemma4
+
+  olmo3.1_32B:
+    model: allenai/Olmo-3.1-32B-Think
+    reasoning_parser: olmo3
+    temperature: 0.6
+    top_p: 0.95
+
+  qwen3.5_27B:
+    model: Qwen/Qwen3.5-27B
+    kv_cache_dtype: fp8
+    reasoning_parser: qwen3
+
+  qwen3.5_122B:
+    model: Qwen/Qwen3.5-122B-A10B
+    enable_expert_parallel: true
+    kv_cache_dtype: fp8
+    reasoning_parser: qwen3
+    gpu_memory_utilization: 0.85
+
+  mistral_small_119B:
+    model: mistralai/Mistral-Small-4-119B-2603
+    reasoning_parser: mistral
+    enforce_eager: true
+    env:
+      VLLM_MLA_DISABLE: "1"
+
+  nvidia_nemotron_3_120B:
+    model: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+    reasoning_parser: nemotron_v3
+    kv_cache_dtype: fp8
+    dtype: auto 
+    enable_expert_parallel: true
+  
+  gpt_oss_120B:
+    model: openai/gpt-oss-120b
+    enable_expert_parallel: true
+    reasoning_parser: openai_gptoss
+
+  gpt-5.4:
+    backend: openai
+    model: gpt-5.4
+    batch_size: 1200
+
+  gpt-5.4-mini:
+    backend: openai
+    model: gpt-5.4-mini
+
+  sonnet_4.6:
+    backend: claude
+    model: claude-sonnet-4-6
+    thinking_type: adaptive
+    effort: medium
+
+  haiku_4.5:
+    backend: claude
+    model: claude-haiku-4-5
+    start_row: 0
+
+  gemini_3_flash:
+    backend: gemini
+    model: gemini-3-flash-preview
+    thinking_budget: -1  # dynamic thinking; set to 0 to disable
+
+  gemini_3.1_pro:
+    backend: gemini
+    model: gemini-3.1-pro-preview
+    thinking_budget: -1  # dynamic thinking; set to 0 to disable
