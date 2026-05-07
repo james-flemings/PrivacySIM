@@ -107,7 +107,7 @@ def process_llm_chatbot() -> Path:
         }
 
         sampled = rng.sample(range(30), 10)
-        lines, responses, preferences = [], {}, {}
+        lines, responses = [], {}
         for q_num, scenario_idx in enumerate(sampled, start=1):
             qid = f"Q{q_num}"
             vignette = create_vignette(
@@ -122,12 +122,26 @@ def process_llm_chatbot() -> Path:
             lines.append(f"{qid}. {vignette}")
             answer = row[f"Q{scenario_idx}_P"]
             responses[qid] = answer
+
+        # preferences carries every vignette this user answered in the
+        # original study, not just the 10 we sampled into questionnaire.
+        preferences = {}
+        for scenario_idx in range(30):
+            vignette = create_vignette(
+                str(row[f"role_shown_{scenario_idx}"]),
+                str(row[f"location_shown_{scenario_idx}"]),
+                str(row[f"purpose_shown_{scenario_idx}"]),
+                str(row[f"content_shown_{scenario_idx}"]),
+                str(row[f"consent_shown_{scenario_idx}"]),
+                str(row[f"anonymity_shown_{scenario_idx}"]),
+                str(row[f"privacy_shown_{scenario_idx}"]),
+            )
             preferences[
                 f"{vignette} Please rate your agreement with the following "
                 "statement about the above scenario: 'This is an appropriate "
                 "use of my ChatGPT data.' Rate from 0 to 100 (0 = Strongly "
                 "Disagree, 50 = Neutral, 100 = Strongly Agree)."
-            ] = answer
+            ] = row[f"Q{scenario_idx}_P"]
 
         rows.append(
             {
@@ -199,6 +213,16 @@ def process_llm_health() -> Path:
         "If information will be stored",
         "If information is used for health monitoring",
         "If information is shared with others",
+    ]
+    # Original survey also asked recipient-specific follow-up conditions.
+    # They are not universally answered, so we keep them out of the shared
+    # questionnaire text and just surface them in `preferences` for the rows
+    # that did answer them.
+    extra_condition_cols = [
+        "If it complies with information protection regulations",
+        "If information is provided for academic research",
+        "If information is used in public health surveys",
+        "If used for information analysis and service improvement",
     ]
     previous_experiences_cols = [
         "Which of the following best describes who you are when using the healthcare chatbot?",
@@ -338,6 +362,22 @@ def process_llm_health() -> Path:
                     f"under the following condition: '{cond_name}'? {HC_OPTIONS}"
                 ] = condition_responses[qid]
 
+            # Surface the extra recipient-specific conditions the user
+            # actually answered into `preferences` (they fall outside the
+            # 6-condition questionnaire shown to the LLM).
+            for cond_name in extra_condition_cols:
+                actual = stripped_to_col.get(cond_name)
+                if actual is None:
+                    continue
+                value = row[actual]
+                if pd.isna(value):
+                    continue
+                preferences[
+                    f"{scenario_preamble} How acceptable is it for "
+                    f"{selected_recipient} to access your {attribute} "
+                    f"under the following condition: '{cond_name}'? {HC_OPTIONS}"
+                ] = map_response_label(value)
+
         rows.append(
             {
                 "user_id": user_id,
@@ -399,7 +439,7 @@ Mira learns your data sharing preferences and automatically manages permissions 
     def build_questionnaire(task3_items, seed):
         rng = random.Random(seed)
         remaining = list(task3_items)
-        blocks, responses, preferences, q_num = [], {}, {}, 1
+        blocks, responses, q_num = [], {}, 1
 
         while q_num <= 10 and remaining:
             query_item = rng.choice(remaining)
@@ -432,6 +472,26 @@ Mira learns your data sharing preferences and automatically manages permissions 
                     permission.strip() if isinstance(permission, str) else permission
                 )
                 responses[f"Q{q_num}"] = value
+                q_num += 1
+                if q_num > 10:
+                    break
+            blocks.append("\n".join(block_lines))
+
+        if q_num <= 10:
+            raise ValueError("Unable to sample 10 questionnaire answers for one of the records.")
+
+        # preferences spans every (query, data, app) the user answered in the
+        # original task3 — typically 60-90 items per user — not just the 10
+        # we sampled into questionnaire.
+        preferences = {}
+        for query_item in task3_items:
+            user_query = query_item["query"].strip()
+            for data_key, permission in query_item.get("answer", {}).items():
+                app_name, data_name = data_key.split(",", 1)
+                app_name, data_name = app_name.strip(), data_name.strip()
+                value = (
+                    permission.strip() if isinstance(permission, str) else permission
+                )
                 # Skip the year-2049 / MIRA scene-setting; preserve the
                 # query + data + app trio that the question actually depends on.
                 preferences[
@@ -440,13 +500,7 @@ Mira learns your data sharing preferences and automatically manages permissions 
                     f"'{data_name}' from '{app_name}'. How willing are you to "
                     f"share this data? {AP_OPTIONS}"
                 ] = value
-                q_num += 1
-                if q_num > 10:
-                    break
-            blocks.append("\n".join(block_lines))
 
-        if q_num <= 10:
-            raise ValueError("Unable to sample 10 questionnaire answers for one of the records.")
         return QUESTIONNAIRE_PREFIX + "\n\n" + "\n\n".join(blocks), responses, preferences
 
     rows = []
@@ -700,6 +754,35 @@ def process_llm_conversational_agent() -> Path:
     }
     response_columns = list(response_column_map.values())
 
+    # The original survey also asked two further question groups (lifestyle &
+    # health, personal characteristics & emotions) — 10 more frequency items
+    # per user. They aren't part of the LLM-facing questionnaire/responses,
+    # but `preferences` should surface every item the user actually answered.
+    extra_response_fragments = {
+        "physical_health": ("Physical health condition (e.g., diagnosis, medication, symptoms, menstrual cycle details)", "lifestyle and health"),
+        "mental_health": ("Mental health", "lifestyle and health"),
+        "lifestyle_habits": ("Lifestyle and habits (e.g., sport activities, hobbies, sleeping time, eating habits)", "lifestyle and health"),
+        "recreational": ("Recreational consumption (i.e., alcohol, smoking habits, recreational drugs)", "lifestyle and health"),
+        "sexual_dating": ("Sexual and dating activities", "lifestyle and health"),
+        "sexual_orientation": ("Sexual orientation", "personal characteristics and emotions"),
+        "mental_state": ("Mental state and personality (e.g., mood, emotions, mindest, personality traits)", "personal characteristics and emotions"),
+        "gender": ("Gender", "personal characteristics and emotions"),
+        "age": ("Age (e.g., age category, age in years, birthdate)", "personal characteristics and emotions"),
+        "physical_traits": ("Physical traits (e.g., size, skin/hair/eye color, weight)", "personal characteristics and emotions"),
+    }
+    extra_response_column_map = {
+        key: (
+            resolve_unique_column(
+                df,
+                f"please indicate how frequently you share such information with a chatbot.\n\n\n\nInformation about your... - {label}",
+            ),
+            label,
+            group,
+        )
+        for key, (label, group) in extra_response_fragments.items()
+    }
+    extra_response_columns = [info[0] for info in extra_response_column_map.values()]
+
     response_values = df[response_columns]
     nan_like_mask = response_values.isna() | response_values.astype(str).apply(
         lambda col: col.str.strip().str.lower().eq("nan")
@@ -727,7 +810,7 @@ def process_llm_conversational_agent() -> Path:
         "Q10": "Political views",
     }
 
-    def _build_lca_preferences(record_dict: dict) -> dict:
+    def _build_lca_preferences(record_dict: dict, extra_record: dict) -> dict:
         out_prefs: dict = {}
         for q_key in [f"Q{i}" for i in range(1, 11)]:
             value = record_dict.get(q_key)
@@ -745,11 +828,29 @@ def process_llm_conversational_agent() -> Path:
                 f"of times where it would have been relevant to share this "
                 f"type of data, which falls under '{group_label}'. {LCA_OPTIONS}"
             ] = value
+        # Add the lifestyle/health and characteristics/emotions items the
+        # user also answered in the original survey but that aren't shown
+        # to the LLM through questionnaire/responses.
+        for _, (_, label, group_label) in extra_response_column_map.items():
+            value = extra_record.get(label)
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                continue
+            out_prefs[
+                f"How frequently do you share information about your "
+                f"{label} with a chatbot? Please think about the number "
+                f"of times where it would have been relevant to share this "
+                f"type of data, which falls under '{group_label}'. {LCA_OPTIONS}"
+            ] = value
         return out_prefs
 
     response_records = (
         df[response_columns]
         .rename(columns={v: k for k, v in response_column_map.items()})
+        .to_dict(orient="records")
+    )
+    extra_records = (
+        df[extra_response_columns]
+        .rename(columns={info[0]: info[1] for info in extra_response_column_map.values()})
         .to_dict(orient="records")
     )
 
@@ -764,7 +865,10 @@ def process_llm_conversational_agent() -> Path:
             .to_dict(orient="records"),
             "questionnaire": [questionnaire_text] * len(df),
             "responses": response_records,
-            "preferences": [_build_lca_preferences(rec) for rec in response_records],
+            "preferences": [
+                _build_lca_preferences(rec, extra)
+                for rec, extra in zip(response_records, extra_records)
+            ],
         },
         columns=OUTPUT_COLUMNS,
     )
